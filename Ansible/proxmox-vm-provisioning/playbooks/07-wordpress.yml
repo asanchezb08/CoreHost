@@ -1,0 +1,401 @@
+---
+# Playbook para instalar WordPress con WP-CLI
+- name: Obtener solicitudes pendientes e información de credenciales
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../vars/db.yml  # Asumiendo que existe este archivo con conexión a la BD central
+
+  tasks:
+    # Verificar conexión a base de datos
+    - name: Verificar conexión a la base de datos central
+      shell: mysql -h {{ db_host }} -u {{ db_user }} -p{{ db_password }} {{ db_name }} -e "SELECT 1"
+      register: db_check
+      ignore_errors: yes
+      changed_when: false
+      no_log: true
+
+    # Obtener solicitudes de instalación de WordPress pendientes
+    - name: Obtener solicitudes pendientes de instalación de WordPress
+      shell: >
+        mysql -h {{ db_host }} -u {{ db_user }} -p{{ db_password }} {{ db_name }}
+        -e "SELECT 
+            sw.hostname,
+            sw.db_name,
+            sw.db_prefix,
+            sw.site_url,
+            sw.site_title,
+            sw.admin_user,
+            sw.admin_pass,
+            sw.admin_email,
+            sw.language,
+            sw.timezone,
+            v.ip_publica
+        FROM solicitudes_wordpress sw
+        JOIN vms v ON sw.hostname = v.hostname
+        WHERE sw.estado = 'pendiente'
+        LIMIT 1"
+        --skip-column-names
+      register: pending_requests
+      changed_when: false
+      when: db_check.rc == 0
+
+    # Ver si hay solicitudes pendientes
+    - name: Ver si hay solicitudes pendientes
+      debug:
+        msg: "No se encontraron solicitudes de WordPress pendientes"
+      when: pending_requests.stdout is defined and pending_requests.stdout == ""
+      
+    # Finalizar el playbook si no hay solicitudes pendientes
+    - name: Finalizar ejecución si no hay solicitudes pendientes
+      meta: end_play
+      when: pending_requests.stdout is defined and pending_requests.stdout == ""
+
+    # Extraer información de la solicitud pendiente
+    - name: Extraer información de la solicitud pendiente
+      set_fact:
+        vm_hostname: "{{ pending_requests.stdout.split('\t')[0] }}"
+        wp_db_name: "{{ pending_requests.stdout.split('\t')[1] }}"
+        wp_db_prefix: "{{ pending_requests.stdout.split('\t')[2] }}"
+        wp_site_url: "{{ pending_requests.stdout.split('\t')[3] }}"
+        wp_site_title: "{{ pending_requests.stdout.split('\t')[4] }}"
+        wp_admin_user: "{{ pending_requests.stdout.split('\t')[5] }}"
+        wp_admin_pass: "{{ pending_requests.stdout.split('\t')[6] }}"
+        wp_admin_email: "{{ pending_requests.stdout.split('\t')[7] }}"
+        wp_language: "{{ pending_requests.stdout.split('\t')[8] | default('es_ES') }}"
+        wp_timezone: "{{ pending_requests.stdout.split('\t')[9] | default('Europe/Madrid') }}"
+        vm_ip: "{{ pending_requests.stdout.split('\t')[10] }}"
+      when: pending_requests.stdout is defined and pending_requests.stdout != ""
+
+    # Obtener credenciales MySQL y FTP de la VM
+    - name: Obtener credenciales MySQL y FTP para la VM
+      shell: >
+        mysql -h {{ db_host }} -u {{ db_user }} -p{{ db_password }} {{ db_name }}
+        -e "SELECT 
+            usuario_mysql,
+            password_mysql,
+            usuario_ftp,
+            password_ftp
+        FROM credenciales_servicios 
+        WHERE hostname = '{{ vm_hostname }}'"
+        --skip-column-names
+      register: vm_credentials
+      changed_when: false
+      when: pending_requests.stdout is defined and pending_requests.stdout != ""
+      no_log: true
+
+    # Extraer credenciales MySQL y FTP
+    - name: Extraer credenciales MySQL y FTP
+      set_fact:
+        wp_db_user: "{{ vm_credentials.stdout.split('\t')[0] }}"
+        wp_db_pass: "{{ vm_credentials.stdout.split('\t')[1] }}"
+        ftp_user: "{{ vm_credentials.stdout.split('\t')[2] }}"
+        ftp_pass: "{{ vm_credentials.stdout.split('\t')[3] }}"
+      when: vm_credentials.stdout is defined and vm_credentials.stdout != ""
+      no_log: true
+
+    # Actualizar campos de usuario y contraseña de la base de datos
+    - name: Actualizar campos de usuario y contraseña de la base de datos
+      shell: >
+        mysql -h {{ db_host }} -u {{ db_user }} -p{{ db_password }} {{ db_name }}
+        -e "UPDATE solicitudes_wordpress 
+            SET db_user = '{{ wp_db_user }}',
+                db_pass = '{{ wp_db_pass }}'
+            WHERE hostname = '{{ vm_hostname }}' 
+            AND estado = 'pendiente'
+            LIMIT 1"
+      when: pending_requests.stdout is defined and pending_requests.stdout != ""
+      no_log: true
+
+    # Mostrar información de la instalación
+    - name: Mostrar información de la instalación
+      debug:
+        msg:
+          - "Hostname: {{ vm_hostname }}"
+          - "IP: {{ vm_ip }}"
+          - "Base de datos: {{ wp_db_name }}"
+          - "Usuario MySQL: {{ wp_db_user }}"
+          - "URL del sitio: {{ wp_site_url }}"
+          - "Usuario FTP: {{ ftp_user }}"
+          - "Idioma: {{ wp_language }}"
+      when: pending_requests.stdout is defined and pending_requests.stdout != ""
+
+    # Añadir host al inventario dinámico
+    - name: Añadir VM al inventario
+      add_host:
+        name: "{{ vm_ip }}"
+        groups: wordpress_target
+        ansible_user: base  # Usuario SSH para conectar a la VM
+        ansible_ssh_private_key_file: ~/.ssh/id_rsa
+        ansible_ssh_common_args: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+        ansible_ssh_pipelining: true
+        ansible_become_method: sudo
+        ansible_become_flags: '--preserve-env=PATH'
+        vm_hostname: "{{ vm_hostname }}"
+        db_name: "{{ wp_db_name }}"
+        db_user: "{{ wp_db_user }}"
+        db_pass: "{{ wp_db_pass }}"
+        db_prefix: "{{ wp_db_prefix }}"
+        site_url: "{{ wp_site_url }}"
+        site_title: "{{ wp_site_title }}"
+        admin_user: "{{ wp_admin_user }}"
+        admin_pass: "{{ wp_admin_pass }}"
+        admin_email: "{{ wp_admin_email }}"
+        language: "{{ wp_language }}"
+        timezone: "{{ wp_timezone }}"
+        ftp_user: "{{ ftp_user }}"
+        ftp_pass: "{{ ftp_pass }}"
+      when: pending_requests.stdout is defined and pending_requests.stdout != ""
+
+# Play para realizar la instalación en la VM remota
+- name: Instalar WordPress en la VM
+  hosts: wordpress_target
+  become: yes
+  become_method: sudo
+  become_flags: '--preserve-env=PATH'
+  gather_facts: yes
+  vars:
+    wp_path: /var/www/html
+    ansible_ssh_pipelining: true
+
+  tasks:
+    # Preparar directorios y permisos
+    - name: Asegurar que el directorio existe
+      file:
+        path: "{{ wp_path }}"
+        state: directory
+        mode: '0755'
+      become: yes
+      become_user: root
+
+    # Eliminar index.html existente
+    - name: Eliminar index.html existente
+      file:
+        path: "{{ wp_path }}/index.html"
+        state: absent
+      become: yes
+      become_user: root
+
+    - name: Asegurar permisos correctos para www-data
+      shell: chown -R www-data:www-data {{ wp_path }}
+      become: yes
+      become_user: root
+      
+    - name: Verificar permisos actuales
+      shell: ls -la {{ wp_path }}
+      register: current_perms
+      
+    - name: Mostrar permisos actuales
+      debug:
+        var: current_perms.stdout_lines
+
+    # Crear la base de datos para WordPress usando comando shell
+    - name: Crear base de datos para WordPress
+      shell: >
+        mysql -u {{ db_user }} -p{{ db_pass }} -e "CREATE DATABASE IF NOT EXISTS {{ db_name }};"
+      register: db_creation
+      changed_when: db_creation.rc == 0
+      failed_when: db_creation.rc != 0
+
+    # Verificar si WordPress ya está instalado
+    - name: Verificar si WordPress ya está instalado
+      stat:
+        path: "{{ wp_path }}/wp-config.php"
+      register: wp_config_exists
+      
+    - name: Mostrar estado de la instalación existente
+      debug:
+        msg: "WordPress ya parece estar instalado en {{ wp_path }}"
+      when: wp_config_exists.stat.exists
+
+    # Descargar WordPress (solo si no existe)
+    - name: Descargar WordPress
+      shell: wp core download --path={{ wp_path }} --locale={{ language }} --force
+      args:
+        chdir: "{{ wp_path }}"
+      environment:
+        PATH: "/usr/local/bin:{{ ansible_env.PATH }}"
+      become: yes
+      become_user: www-data
+      register: wp_download_result
+      failed_when: wp_download_result.rc != 0
+
+    # Crear archivo wp-config.php (o reemplazarlo si ya existe)
+    - name: Crear archivo wp-config.php
+      shell: >
+        wp config create 
+        --dbname={{ db_name }} 
+        --dbuser={{ db_user }} 
+        --dbpass={{ db_pass }} 
+        --dbhost=localhost 
+        --dbprefix={{ db_prefix }}
+        --skip-check 
+        --path={{ wp_path }}
+        --force
+      args:
+        chdir: "{{ wp_path }}"
+      environment:
+        PATH: "/usr/local/bin:{{ ansible_env.PATH }}"
+      become: yes
+      become_user: www-data
+      register: wp_config_result
+      failed_when: wp_config_result.rc != 0
+      
+    # Añadir configuraciones adicionales a wp-config.php
+    - name: Añadir configuraciones adicionales a wp-config.php
+      lineinfile:
+        path: "{{ wp_path }}/wp-config.php"
+        insertbefore: "/* That's all, stop editing! Happy publishing. */"
+        line: "{{ item }}"
+      with_items:
+        - "define('DISALLOW_FILE_EDIT', true);"
+        - "define('WP_DEBUG', false);"
+      become: yes
+      become_user: www-data
+
+    # Verificar si WordPress ya está instalado en la base de datos
+    - name: Verificar si WordPress ya está instalado en la base de datos
+      shell: >
+        wp core is-installed --path={{ wp_path }}
+      args:
+        chdir: "{{ wp_path }}"
+      environment:
+        PATH: "/usr/local/bin:{{ ansible_env.PATH }}"
+      become: yes
+      become_user: www-data
+      register: wp_is_installed
+      failed_when: false
+      changed_when: false
+      
+    - name: Mostrar estado de la instalación de WordPress
+      debug:
+        msg: "WordPress {{ 'ya está instalado' if wp_is_installed.rc == 0 else 'no está instalado' }} en la base de datos"
+
+    # Instalar WordPress solo si no está ya instalado
+    - name: Instalar WordPress
+      shell: >
+        wp core install 
+        --url="{{ site_url }}" 
+        --title="{{ site_title }}" 
+        --admin_user="{{ admin_user }}" 
+        --admin_password="{{ admin_pass }}" 
+        --admin_email="{{ admin_email }}" 
+        --skip-email 
+        --path={{ wp_path }}
+        --locale={{ language }}
+      args:
+        chdir: "{{ wp_path }}"
+      environment:
+        PATH: "/usr/local/bin:{{ ansible_env.PATH }}"
+      become: yes
+      become_user: www-data
+      register: wp_install_result
+      failed_when: wp_install_result.rc != 0 and "WordPress is already installed" not in wp_install_result.stderr
+      when: wp_is_installed.rc != 0
+
+    # Configurar zona horaria
+    - name: Configurar zona horaria
+      shell: wp option update timezone_string "{{ timezone }}" --path={{ wp_path }}
+      args:
+        chdir: "{{ wp_path }}"
+      environment:
+        PATH: "/usr/local/bin:{{ ansible_env.PATH }}"
+      become: yes
+      become_user: www-data
+      ignore_errors: yes  # No fallar si hay problemas con la zona horaria
+
+    # Actualizar traducciones
+    - name: Actualizar todas las traducciones
+      shell: wp language core update --path={{ wp_path }}
+      args:
+        chdir: "{{ wp_path }}"
+      environment:
+        PATH: "/usr/local/bin:{{ ansible_env.PATH }}"
+      become: yes
+      become_user: www-data
+      ignore_errors: yes  # No fallar si hay problemas con el idioma
+
+    # Verificar si el usuario FTP existe
+    - name: Verificar si el usuario FTP existe
+      shell: id {{ ftp_user }} || echo "no existe"
+      register: ftp_user_check
+      changed_when: false
+      ignore_errors: yes
+      become: yes
+      become_user: root
+
+    # Mostrar información del usuario FTP
+    - name: Información del usuario FTP
+      debug:
+        msg: "El usuario FTP {{ ftp_user }} {{ 'existe' if 'no existe' not in ftp_user_check.stdout else 'no existe' }}"
+
+    # Establecer permisos correctos - usuario FTP como propietario
+    - name: Establecer permisos correctos - usuario FTP como propietario
+      file:
+        path: "{{ wp_path }}"
+        owner: "{{ ftp_user }}"
+        group: "{{ ftp_user }}"
+        recurse: yes
+      become: yes
+      become_user: root
+      when: "'no existe' not in ftp_user_check.stdout"
+
+    # Establecer permisos correctos - www-data como alternativa
+    - name: Establecer permisos correctos - www-data como alternativa
+      file:
+        path: "{{ wp_path }}"
+        owner: www-data
+        group: www-data
+        recurse: yes
+      become: yes
+      become_user: root
+      when: "'no existe' in ftp_user_check.stdout"
+
+    # Asegurar que los archivos sean legibles por el servidor web
+    - name: Asegurar que los archivos sean legibles por el servidor web
+      shell: find {{ wp_path }} -type f -exec chmod 644 {} \;
+      become: yes
+      become_user: root
+      changed_when: true
+
+    # Asegurar que los directorios sean accesibles
+    - name: Asegurar que los directorios sean accesibles
+      shell: find {{ wp_path }} -type d -exec chmod 755 {} \;
+      become: yes
+      become_user: root
+      changed_when: true
+
+    # Finalizar la instalación
+    - name: Mostrar resumen final
+      debug:
+        msg: "WordPress {{ 'instalado' if wp_is_installed.rc != 0 else 'configurado' }} correctamente en {{ site_url }} ({{ wp_path }})"
+      when: (wp_install_result is defined and wp_install_result is succeeded) or (wp_is_installed.rc == 0)
+
+    # Registrar el resultado en la base de datos
+    - name: Finalizar instalación y notificar éxito
+      debug:
+        msg: "WordPress instalado correctamente en {{ site_url }} ({{ wp_path }}). Hostname: {{ vm_hostname }}"
+      when: (wp_install_result is defined and wp_install_result is succeeded) or (wp_is_installed is defined and wp_is_installed.rc == 0)
+
+    # Actualizar estado en la base de datos como completado
+    - name: Actualizar estado en la base de datos a completado
+      delegate_to: localhost
+      shell: >
+        mysql -h 172.16.56.145 -u hostinguser -pproyecto hosting_inventari
+        -e "UPDATE solicitudes_wordpress
+            SET estado = 'instalado'
+            WHERE hostname = '{{ vm_hostname }}';"
+      when:
+        - vm_hostname is defined
+      vars:
+        ansible_become: no
+
+
+    # Verificar el acceso a las variables de localhost
+    - name: Verificar variables de localhost disponibles
+      debug:
+        msg: 
+          - "Hostname: {{ vm_hostname }}"
+          - "Variables de localhost disponibles: {{ hostvars['localhost'] is defined }}"
+          - "Variable db_host definida: {{ hostvars['localhost'].db_host is defined }}"
+      ignore_errors: yes

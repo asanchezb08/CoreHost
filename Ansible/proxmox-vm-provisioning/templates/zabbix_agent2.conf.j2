@@ -1,0 +1,20 @@
+### Configuración básica para Zabbix Agent 2
+LogFile=/var/log/zabbix/zabbix_agent2.log
+LogFileSize=0
+
+# Configuración del Servidor
+Server=172.16.56.200
+ServerActive=172.16.56.200
+
+# Nombre del host
+Hostname={{ vm_hostname }}
+
+# Grupo de host
+HostMetadata=Hosting
+
+# Incluir archivos de configuración adicionales
+Include=/etc/zabbix/zabbix_agent2.d/*.conf
+
+# Timeout en segundos
+Timeout=30
+

@@ -1,0 +1,365 @@
+---
+# Script para crear usuarios de FTP y MariaDB para las VMs e instalar agente Wazuh
+- name: Identificar VM y crear usuarios de servicios
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../vars/db.yml
+    - ../vars/api.yml
+
+  tasks:
+    # Verificar conexión a base de datos
+    - name: Verificar conexión a la base de datos
+      shell: mysql -h {{ db_host }} -u {{ db_user }} -p{{ db_password }} {{ db_name }} -e "SELECT 1"
+      register: db_check
+      ignore_errors: yes
+      changed_when: false
+      no_log: true
+
+    # Obtener la primera VM en estado 'instalar_usuarios'
+    - name: Obtener primera VM en estado 'instalar_usuarios'
+      shell: >
+        mysql -h {{ db_host }} -u {{ db_user }} -p{{ db_password }} {{ db_name }}
+        -e "SELECT
+            id,
+            vmid,
+            hostname,
+            ip_publica,
+            cliente_id
+        FROM vms
+        WHERE estado = 'instalar_usuarios'
+        ORDER BY id ASC
+        LIMIT 1"
+        --skip-column-names
+      register: vm_info
+      changed_when: false
+      when: db_check.rc == 0
+
+    # Mostrar mensaje si no hay VMs para configurar
+    - name: Verificar si hay VMs para configurar
+      fail:
+        msg: "No se encontraron VMs en estado 'instalar_usuarios'"
+      when: vm_info.stdout is defined and vm_info.stdout == ""
+
+    # Extraer información de la VM
+    - name: Extraer información de la VM
+      set_fact:
+        vm_id: "{{ vm_info.stdout.split('\t')[0] }}"
+        vm_vmid: "{{ vm_info.stdout.split('\t')[1] }}"
+        vm_hostname: "{{ vm_info.stdout.split('\t')[2] }}"
+        vm_ip: "{{ vm_info.stdout.split('\t')[3] }}"
+        cliente_id: "{{ vm_info.stdout.split('\t')[4] }}"
+      when: vm_info.stdout is defined and vm_info.stdout != ""
+
+    # Generar nombres de usuario
+    - name: Generar nombres de usuario de servicios
+      set_fact:
+        usuario_ftp: "{{ vm_hostname }}ftp"
+        usuario_mysql: "{{ vm_hostname }}db"
+        password_ftp: "{{ vm_hostname }}123"
+        password_mysql: "{{ vm_hostname }}123"
+      when: vm_hostname is defined
+
+    - name: Mostrar información de usuarios a crear
+      debug:
+        msg:
+          - "VM ID: {{ vm_id }}"
+          - "Hostname: {{ vm_hostname }}"
+          - "IP: {{ vm_ip }}"
+          - "Usuario FTP: {{ usuario_ftp }}"
+          - "Usuario DB: {{ usuario_mysql }}"
+          - "Contraseñas: hostname123"
+      when: usuario_ftp is defined
+
+    # Verificar estado de la VM
+    - name: Verificar estado de la VM
+      uri:
+        url: "https://{{ api_host }}:8006/api2/json/nodes/{{ proxmox_node }}/qemu/{{ vm_vmid }}/status/current"
+        method: GET
+        headers:
+          Authorization: "PVEAPIToken={{ api_user }}!{{ api_token_id }}={{ api_token_secret }}"
+        validate_certs: false
+      register: vm_status
+      when: vm_vmid is defined
+
+    # Iniciar la VM si está apagada
+    - name: Iniciar la VM si está apagada
+      uri:
+        url: "https://{{ api_host }}:8006/api2/json/nodes/{{ proxmox_node }}/qemu/{{ vm_vmid }}/status/start"
+        method: POST
+        headers:
+          Authorization: "PVEAPIToken={{ api_user }}!{{ api_token_id }}={{ api_token_secret }}"
+        body_format: form-urlencoded
+        validate_certs: false
+      register: start_result
+      when:
+        - vm_vmid is defined
+        - vm_status.json.data.status == "stopped"
+
+    # Esperar para que la VM arranque completamente
+    - name: Esperar a que la VM arranque completamente (90 segundos)
+      pause:
+        seconds: 90
+      when:
+        - vm_vmid is defined
+        - vm_status.json.data.status == "stopped"
+        - start_result is defined
+        - start_result is success
+
+    # Esperar a que el SSH esté disponible
+    - name: Esperar a que SSH esté disponible
+      wait_for:
+        host: "{{ vm_ip }}"
+        port: 22
+        delay: 5
+        timeout: 300
+      when: vm_ip is defined
+
+    # Añadir VM al inventario para configuración
+    - name: Añadir VM al inventario
+      add_host:
+        name: "{{ vm_ip }}"
+        groups: target_vm
+        ansible_user: base
+        ansible_ssh_private_key_file: ~/.ssh/id_rsa
+        ansible_ssh_common_args: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+        vm_hostname: "{{ vm_hostname }}"
+        usuario_ftp: "{{ usuario_ftp }}"
+        password_ftp: "{{ password_ftp }}"
+        usuario_mysql: "{{ usuario_mysql }}"
+        password_mysql: "{{ password_mysql }}"
+      when: vm_ip is defined and usuario_ftp is defined
+
+# Configurar la VM con los usuarios de servicios
+- name: Configurar usuarios de servicios en la VM e instalar Wazuh
+  hosts: target_vm
+  gather_facts: yes
+  become: yes
+  become_method: sudo
+  vars:
+    wazuh_manager_ip: '172.16.56.119'
+
+  tasks:
+    # Función para esperar a que se liberen los bloqueos apt
+    - name: Definir función de espera para bloqueos apt
+      set_fact:
+        wait_for_apt_locks: |
+          # Función para verificar si hay bloqueos
+          check_locks() {
+            if lsof /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || lsof /var/lib/apt/lists/lock >/dev/null 2>&1 || lsof /var/lib/dpkg/lock >/dev/null 2>&1; then
+              return 0  # Hay bloqueos
+            else
+              return 1  # No hay bloqueos
+            fi
+          }
+
+          # Función para matar procesos apt que estén ejecutándose por más de 10 minutos
+          kill_stuck_processes() {
+            for pid in $(pgrep -f "apt-get|dpkg" | grep -v $$); do
+              if [ -n "$pid" ]; then
+                process_start=$(ps -o lstart= -p $pid 2>/dev/null)
+                if [ -n "$process_start" ]; then
+                  start_seconds=$(date -d "$process_start" +%s)
+                  current_seconds=$(date +%s)
+                  runtime=$((current_seconds - start_seconds))
+
+                  # Si el proceso lleva más de 10 minutos (600 segundos), lo terminamos
+                  if [ $runtime -gt 600 ]; then
+                    echo "Proceso apt/dpkg con PID $pid lleva más de 10 minutos ejecutándose. Terminando..."
+                    kill -9 $pid 2>/dev/null
+                  fi
+                fi
+              fi
+            done
+          }
+
+          # Contador para intentos
+          attempts=0
+          max_attempts=30  # 5 minutos de espera total (10 segundos × 30 intentos)
+
+          while check_locks; do
+            attempts=$((attempts+1))
+            echo "$(date): Intento $attempts de $max_attempts - Esperando a que se liberen los bloqueos apt..."
+            ps -ef | grep -E "(apt-get|apt|dpkg)" | grep -v grep || echo "No hay procesos apt/dpkg ejecutándose"
+
+            # Si llevamos más de 15 intentos, intentamos matar procesos bloqueados
+            if [ $attempts -gt 15 ]; then
+              echo "Demasiados intentos, verificando si hay procesos bloqueados..."
+              kill_stuck_processes
+            fi
+
+            # Si hemos alcanzado el máximo de intentos, intentamos eliminar los archivos de bloqueo
+            if [ $attempts -ge $max_attempts ]; then
+              echo "Se alcanzó el máximo de intentos. Eliminando archivos de bloqueo..."
+              rm -f /var/lib/dpkg/lock-frontend /var/lib/apt/lists/lock /var/lib/dpkg/lock 2>/dev/null
+              break
+            fi
+
+            sleep 10
+          done
+
+          # Asegurarse de que dpkg está en un estado consistente
+          dpkg --configure -a
+
+    # Crear usuario FTP con ProFTPd
+    - name: Crear usuario FTP
+      user:
+        name: "{{ usuario_ftp }}"
+        shell: /bin/bash
+        home: /var/www/html
+        state: present
+
+    # Establecer contraseña para usuario FTP
+    - name: Establecer contraseña para usuario FTP
+      shell: "echo '{{ usuario_ftp }}:{{ password_ftp }}' | chpasswd"
+
+    # Asegurar que el directorio /var/www/html existe
+    - name: Verificar que existe el directorio web
+      file:
+        path: /var/www/html
+        state: directory
+        mode: '0755'
+
+    # Configurar permisos de directorio web para el usuario FTP
+    - name: Configurar permisos de directorio web
+      file:
+        path: /var/www/html
+        owner: "{{ usuario_ftp }}"
+        group: www-data
+        mode: '0755'
+        recurse: yes
+
+    # Crear usuario MariaDB
+    - name: Crear usuario MariaDB
+      shell: |
+        mysql -u root -e "CREATE USER IF NOT EXISTS '{{ usuario_mysql }}'@'%' IDENTIFIED BY '{{ password_mysql }}';"
+        mysql -u root -e "GRANT ALL PRIVILEGES ON *.* TO '{{ usuario_mysql }}'@'%';"
+        mysql -u root -e "FLUSH PRIVILEGES;"
+      ignore_errors: yes
+
+    # Modificar bind-address en la configuración de MariaDB
+    - name: Configurar MariaDB para permitir conexiones remotas
+      lineinfile:
+        path: /etc/mysql/mariadb.conf.d/50-server.cnf  # La ruta puede variar según la distribución
+        regexp: '^bind-address\s*='
+        line: 'bind-address = 0.0.0.0'
+        backup: yes
+      notify: restart mariadb
+
+    # Reiniciar MariaDB directamente con systemctl
+    - name: Reiniciar servicio MariaDB
+      systemd:
+        name: mariadb  # En algunas distribuciones puede ser 'mysql'
+        state: restarted
+
+    # INSTALACIÓN DEL AGENTE WAZUH
+    # Descargar el paquete del agente Wazuh
+    - name: Descargar el paquete del agente Wazuh
+      get_url:
+        url: https://packages.wazuh.com/4.x/apt/pool/main/w/wazuh-agent/wazuh-agent_4.11.2-1_amd64.deb
+        dest: /tmp/wazuh-agent_4.11.2-1_amd64.deb
+        mode: '0644'
+
+    # Instalar el agente Wazuh
+    - name: Instalar el agente Wazuh
+      shell: |
+        WAZUH_MANAGER='{{ wazuh_manager_ip }}' WAZUH_AGENT_NAME='{{ vm_hostname }}' dpkg -i /tmp/wazuh-agent_4.11.2-1_amd64.deb
+      args:
+        executable: /bin/bash
+
+    # Recargar systemd
+    - name: Recargar systemd
+      systemd:
+        daemon_reload: yes
+
+    # Habilitar el servicio de Wazuh
+    - name: Habilitar el servicio de Wazuh
+      systemd:
+        name: wazuh-agent
+        enabled: yes
+
+    # Iniciar el servicio de Wazuh
+    - name: Iniciar el servicio de Wazuh
+      systemd:
+        name: wazuh-agent
+        state: started
+
+    # Limpiar archivo descargado
+    - name: Eliminar el archivo .deb descargado
+      file:
+        path: /tmp/wazuh-agent_4.11.2-1_amd64.deb
+        state: absent
+
+    # Mostrar mensaje de usuarios creados
+    - name: Mostrar información de usuarios creados
+      debug:
+        msg: |
+          Usuarios creados exitosamente:
+
+          FTP:
+          - Usuario: {{ usuario_ftp }}
+          - Contraseña: {{ password_ftp }}
+          - Directorio: /var/www/html
+
+          MariaDB:
+          - Usuario: {{ usuario_mysql }}
+          - Contraseña: {{ password_mysql }}
+          - Permisos: ALL PRIVILEGES en todas las bases de datos
+
+          Agente Wazuh:
+          - Instalado: wazuh-agent_4.11.2-1
+          - Configurado con el manager: {{ wazuh_manager_ip }}
+          - Nombre de agente: {{ vm_hostname }}
+          - Servicio: habilitado y en ejecución
+
+  handlers:
+    - name: Reiniciar ProFTPd
+      systemd:
+        name: proftpd
+        state: restarted
+
+# Actualizar estado en la base de datos
+- name: Actualizar estado en la base de datos
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../vars/db.yml
+
+  tasks:
+    # Guardar credenciales en la tabla de la base de datos
+    - name: Guardar credenciales en la base de datos
+      shell: >
+        mysql -h {{ db_host }} -u {{ db_user }} -p{{ db_password }} {{ db_name }}
+        -e "INSERT INTO credenciales_servicios
+            (vm_id, hostname, usuario_ftp, password_ftp, usuario_mysql, password_mysql)
+            VALUES
+            ('{{ hostvars['localhost']['vm_id'] }}',
+             '{{ hostvars['localhost']['vm_hostname'] }}',
+             '{{ hostvars['localhost']['usuario_ftp'] }}',
+             '{{ hostvars['localhost']['password_ftp'] }}',
+             '{{ hostvars['localhost']['usuario_mysql'] }}',
+             '{{ hostvars['localhost']['password_mysql'] }}')"
+      when: hostvars['localhost']['vm_id'] is defined
+
+    # Actualizar estado de la VM a 'completado'
+    - name: Actualizar estado en la base de datos
+      shell: >
+        mysql -h {{ db_host }} -u {{ db_user }} -p{{ db_password }} {{ db_name }}
+        -e "UPDATE vms
+            SET estado = 'completado'
+            WHERE id = {{ hostvars['localhost']['vm_id'] }}"
+      when: hostvars['localhost']['vm_id'] is defined
+
+    - name: Mostrar resumen
+      debug:
+        msg: |
+          Credenciales guardadas en la base de datos y VM actualizada a estado 'completado'.
+
+          VM ID: {{ hostvars['localhost']['vm_id'] }}
+          Hostname: {{ hostvars['localhost']['vm_hostname'] }}
+
+          Usuario FTP: {{ hostvars['localhost']['usuario_ftp'] }}
+          Usuario MariaDB: {{ hostvars['localhost']['usuario_mysql'] }}
+          
+          Agente Wazuh instalado correctamente.
+      when: hostvars['localhost']['vm_id'] is defined

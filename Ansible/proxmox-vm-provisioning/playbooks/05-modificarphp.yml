@@ -1,0 +1,296 @@
+---
+# Playbook para actualizar PHP en VMs 
+- name: Actualizar versión de PHP en VMs
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../vars/db.yml
+    - ../vars/api.yml
+
+  tasks:
+    # Verificar conexión a base de datos
+    - name: Verificar conexión a la base de datos
+      shell: mysql -h {{ db_host }} -u {{ db_user }} -p{{ db_password }} {{ db_name }} -e "SELECT 1"
+      register: db_check
+      ignore_errors: yes
+      changed_when: false
+      no_log: true
+
+    # Obtener la primera VM en estado 'cambiar_php'
+    - name: Obtener primera VM en estado 'cambiar_php'
+      shell: >
+        mysql -h {{ db_host }} -u {{ db_user }} -p{{ db_password }} {{ db_name }}
+        -e "SELECT
+            id,
+            vmid,
+            hostname,
+            ip_publica,
+            php
+        FROM vms
+        WHERE estado = 'cambio_php'
+        ORDER BY id ASC
+        LIMIT 1"
+        --skip-column-names
+      register: vm_info
+      changed_when: false
+      when: db_check.rc == 0
+
+    # Mostrar mensaje si no hay VMs para actualizar
+    - name: Verificar si hay VMs para actualizar
+      fail:
+        msg: "No se encontraron VMs en estado 'cambiar_php'"
+      when: vm_info.stdout is defined and vm_info.stdout == ""
+      ignore_errors: yes
+
+    # Extraer información de la VM
+    - name: Extraer información de la VM
+      set_fact:
+        vm_id: "{{ vm_info.stdout.split('\t')[0] }}"
+        vm_vmid: "{{ vm_info.stdout.split('\t')[1] }}"
+        vm_hostname: "{{ vm_info.stdout.split('\t')[2] }}"
+        vm_ip: "{{ vm_info.stdout.split('\t')[3] }}"
+        php_version: "{{ vm_info.stdout.split('\t')[4] }}"
+      when: vm_info.stdout is defined and vm_info.stdout != ""
+
+    - name: Mostrar información de la VM
+      debug:
+        msg:
+          - "ID: {{ vm_id }}"
+          - "VMID: {{ vm_vmid }}"
+          - "Hostname: {{ vm_hostname }}"
+          - "IP: {{ vm_ip }}"
+          - "Nueva versión de PHP: {{ php_version }}"
+      when: vm_info.stdout is defined and vm_info.stdout != ""
+
+    # Validar que la versión de PHP es correcta
+    - name: Validar versión de PHP
+      assert:
+        that: php_version in ['5.6', '7.4', '8.1']
+        fail_msg: "Versión de PHP no válida: {{ php_version }}. Debe ser 5.6, 7.4 o 8.1."
+      when: vm_info.stdout is defined and vm_info.stdout != ""
+
+    # Esperar a que SSH esté disponible
+    - name: Esperar a que SSH esté disponible
+      wait_for:
+        host: "{{ vm_ip }}"
+        port: 22
+        delay: 5
+        timeout: 300
+      when: vm_info.stdout is defined and vm_info.stdout != ""
+
+    # Añadir VM al inventario para la instalación
+    - name: Añadir VM al inventario
+      add_host:
+        name: "{{ vm_ip }}"
+        groups: php_target
+        ansible_user: base
+        ansible_ssh_private_key_file: ~/.ssh/id_rsa
+        ansible_ssh_common_args: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+        vm_hostname: "{{ vm_hostname }}"
+        php_version: "{{ php_version }}"
+      when: vm_info.stdout is defined and vm_info.stdout != ""
+
+# Segundo play para actualizar PHP en la VM
+- name: Actualizar PHP en la VM
+  hosts: php_target
+  gather_facts: yes
+  become: yes
+  become_method: sudo
+
+  tasks:
+    # Esperar y liberación de bloqueos apt
+    - name: Esperar a que se liberen completamente los bloqueos de APT
+      block:
+        - name: Esperar a que se liberen todos los bloqueos apt (hasta 5 minutos)
+          shell: |
+            max_attempts=60  # 5 minutos (60 * 5 segundos)
+            attempt=0
+            while [ $attempt -lt $max_attempts ]; do
+              if ! lsof /var/lib/dpkg/lock-frontend >/dev/null 2>&1 &&
+                 ! lsof /var/lib/apt/lists/lock >/dev/null 2>&1 &&
+                 ! lsof /var/lib/dpkg/lock >/dev/null 2>&1 &&
+                 ! pgrep -x "apt" >/dev/null 2>&1 &&
+                 ! pgrep -x "dpkg" >/dev/null 2>&1; then
+                echo "Bloqueos de APT liberados"
+                exit 0
+              fi
+              sleep 5
+              attempt=$((attempt + 1))
+            done
+            echo "Tiempo de espera agotado para liberar bloqueos apt"
+            exit 1
+          register: apt_lock_check
+          changed_when: false
+          failed_when: apt_lock_check.rc != 0
+          args:
+            executable: /bin/bash
+
+    # Mostrar la versión actual de PHP antes de actualizar
+    - name: Obtener versión actual de PHP
+      shell: php -v || echo "PHP no instalado"
+      register: php_current_version
+      changed_when: false
+      ignore_errors: yes
+    
+    - name: Mostrar versión actual de PHP
+      debug:
+        var: php_current_version.stdout_lines
+    
+    # Instalar software-properties-common para añadir PPA
+    - name: Instalar software-properties-common
+      apt:
+        name: software-properties-common
+        state: present
+        update_cache: yes
+
+    # Añadir repositorio PHP
+    - name: Añadir repositorio de PHP (Ondřej Surý PPA)
+      apt_repository:
+        repo: ppa:ondrej/php
+        state: present
+        update_cache: yes
+      register: repo_added
+
+    # Purgar versión actual de PHP usando apt
+    - name: Purgar todas las versiones de PHP existentes
+      apt:
+        name: "php*"
+        state: absent
+        purge: yes
+      register: purge_result
+
+    # También purgar libapache2-mod-php
+    - name: Purgar módulos PHP de Apache
+      apt:
+        name: "libapache2-mod-php*"
+        state: absent
+        purge: yes
+      register: purge_apache_result
+
+    # Limpiar paquetes no utilizados
+    - name: Limpiar paquetes no utilizados
+      apt:
+        autoremove: yes
+    
+    # Actualizar caché tras la purga
+    - name: Actualizar caché APT después de la purga
+      apt:
+        update_cache: yes
+    
+    # Instalar PHP según la versión requerida
+    - name: Instalar PHP {{ php_version }} y extensiones (PHP 5.6)
+      apt:
+        name:
+          - php5.6
+          - php5.6-cli
+          - php5.6-common
+          - php5.6-curl
+          - php5.6-gd
+          - php5.6-json
+          - php5.6-mbstring
+          - php5.6-mysql
+          - php5.6-opcache
+          - php5.6-readline
+          - php5.6-xml
+          - php5.6-zip
+          - libapache2-mod-php5.6
+        state: present
+        update_cache: yes
+      when: php_version == "5.6"
+      register: php_install
+      retries: 3
+      delay: 10
+      until: php_install is success
+    
+    - name: Instalar PHP {{ php_version }} y extensiones (PHP 7.4)
+      apt:
+        name:
+          - php7.4
+          - php7.4-cli
+          - php7.4-common
+          - php7.4-curl
+          - php7.4-gd
+          - php7.4-json
+          - php7.4-mbstring
+          - php7.4-mysql
+          - php7.4-opcache
+          - php7.4-readline
+          - php7.4-xml
+          - php7.4-zip
+          - libapache2-mod-php7.4
+        state: present
+        update_cache: yes
+      when: php_version == "7.4"
+      register: php_install
+      retries: 3
+      delay: 10
+      until: php_install is success
+    
+    - name: Instalar PHP {{ php_version }} y extensiones (PHP 8.1)
+      apt:
+        name:
+          - php8.1
+          - php8.1-cli
+          - php8.1-common
+          - php8.1-curl
+          - php8.1-gd
+          - php8.1-mbstring
+          - php8.1-mysql
+          - php8.1-opcache
+          - php8.1-readline
+          - php8.1-xml
+          - php8.1-zip
+          - libapache2-mod-php8.1
+        state: present
+        update_cache: yes
+      when: php_version == "8.1"
+      register: php_install
+      retries: 3
+      delay: 10
+      until: php_install is success
+    
+    # Configurar PHP como predeterminado
+    - name: Configurar PHP {{ php_version }} como predeterminado con update-alternatives
+      shell: update-alternatives --set php /usr/bin/php{{ php_version }}
+      ignore_errors: yes
+    
+    # Activar módulo PHP en Apache
+    - name: Activar módulo PHP {{ php_version }} en Apache
+      shell: a2enmod php{{ php_version }}
+      register: a2enmod_result
+      changed_when: "'already enabled' not in a2enmod_result.stdout"
+      ignore_errors: yes
+    
+    # Reiniciar Apache
+    - name: Reiniciar Apache
+      systemd:
+        name: apache2
+        state: restarted
+        enabled: yes
+      ignore_errors: yes
+    
+    # Verificar instalación
+    - name: Verificar versión de PHP instalada
+      shell: php -v
+      register: php_version_check
+      changed_when: false
+    
+    - name: Mostrar versión de PHP instalada
+      debug:
+        var: php_version_check.stdout_lines
+
+# Actualizar el estado en la base de datos
+- name: Actualizar estado en la base de datos
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../vars/db.yml
+
+  tasks:
+    - name: Actualizar estado en la base de datos
+      shell: >
+        mysql -h {{ db_host }} -u {{ db_user }} -p{{ db_password }} {{ db_name }}
+        -e "UPDATE vms
+            SET estado = 'completado'
+            WHERE id = {{ hostvars['localhost']['vm_id'] }}"
+      when: hostvars['localhost']['vm_id'] is defined

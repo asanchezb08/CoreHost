@@ -1,0 +1,5 @@
+db_host: "172.16.56.145"
+db_name: "hosting_inventari"
+db_user: "hostinguser"
+db_password: "proyecto"
+use_database: true
