@@ -1,0 +1,360 @@
+/* Estilos generales */
+:root {
+    --primary-color: #4a6da7;
+    --secondary-color: #5d8be8;
+    --success-color: #28a745;
+    --danger-color: #dc3545;
+    --warning-color: #ffc107;
+    --light-color: #f8f9fa;
+    --dark-color: #343a40;
+    --gray-color: #6c757d;
+    --border-color: #dee2e6;
+    --hover-color: #e9ecef;
+}
+
+body {
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    color: #333;
+    line-height: 1.6;
+    background-color: #f5f7fa;
+    margin: 0;
+    padding: 0;
+}
+
+.container {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 20px;
+}
+
+/* Header de bienvenida */
+.welcome-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 20px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.welcome-header h2 {
+    margin: 0;
+    color: var(--dark-color);
+}
+
+.header-actions {
+    display: flex;
+    gap: 10px;
+}
+
+/* Estilos para botones */
+.btn {
+    display: inline-block;
+    font-weight: 500;
+    text-align: center;
+    vertical-align: middle;
+    cursor: pointer;
+    border: 1px solid transparent;
+    padding: 0.375rem 0.75rem;
+    font-size: 1rem;
+    line-height: 1.5;
+    border-radius: 0.25rem;
+    transition: all 0.2s ease-in-out;
+    text-decoration: none;
+}
+
+.btn-primary {
+    background-color: var(--primary-color);
+    color: white;
+}
+
+.btn-primary:hover {
+    background-color: var(--secondary-color);
+}
+
+.btn-danger {
+    background-color: var(--danger-color);
+    color: white;
+}
+
+.btn-danger:hover {
+    background-color: #bd2130;
+}
+
+.btn-secondary {
+    background-color: var(--gray-color);
+    color: white;
+}
+
+.btn-secondary:hover {
+    background-color: #5a6268;
+}
+
+.btn-success {
+    background-color: var(--success-color);
+    color: white;
+}
+
+.btn-success:hover {
+    background-color: #218838;
+}
+
+/* Tabla de VMs */
+.vm-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-bottom: 20px;
+    background-color: white;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+    border-radius: 5px;
+    overflow: hidden;
+}
+
+.vm-table th {
+    background-color: var(--light-color);
+    color: var(--dark-color);
+    padding: 12px 15px;
+    text-align: left;
+    font-weight: 600;
+    border-bottom: 2px solid var(--border-color);
+}
+
+.vm-table td {
+    padding: 12px 15px;
+    border-bottom: 1px solid var(--border-color);
+    vertical-align: middle;
+}
+
+.vm-table tr:last-child td {
+    border-bottom: none;
+}
+
+.vm-table tr:hover {
+    background-color: var(--hover-color);
+}
+
+/* Estilo para estado de VM */
+.vm-status {
+    display: inline-block;
+    padding: 0.25rem 0.5rem;
+    font-size: 0.875rem;
+    font-weight: 500;
+    border-radius: 0.25rem;
+}
+
+.status-completado {
+    background-color: #d4edda;
+    color: #155724;
+}
+
+.status-pendiente {
+    background-color: #fff3cd;
+    color: #856404;
+}
+
+.status-error {
+    background-color: #f8d7da;
+    color: #721c24;
+}
+
+/* Sección de detalles de VM */
+.vm-details-section {
+    margin-top: 30px;
+}
+
+.vm-details-section h3 {
+    margin-bottom: 15px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.vm-cards {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 20px;
+    margin-bottom: 30px;
+}
+
+.vm-card {
+    background-color: white;
+    border-radius: 5px;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+    overflow: hidden;
+    width: 100%;
+    min-width: 300px;
+    margin-bottom: 20px;
+}
+
+.vm-card-header {
+    background-color: var(--primary-color);
+    color: white;
+    padding: 12px 15px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.vm-card-header h4 {
+    margin: 0;
+    font-size: 1.1rem;
+}
+
+.hostname-badge {
+    background-color: rgba(255, 255, 255, 0.2);
+    padding: 3px 8px;
+    border-radius: 4px;
+    font-size: 0.9rem;
+}
+
+.vm-card-info {
+    padding: 15px;
+}
+
+.vm-info-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 10px;
+    margin-bottom: 15px;
+}
+
+.vm-info-item {
+    margin-bottom: 10px;
+}
+
+.vm-info-item label {
+    display: block;
+    font-size: 0.8rem;
+    color: var(--gray-color);
+    margin-bottom: 3px;
+}
+
+.vm-info-item p {
+    margin: 0;
+    font-weight: 500;
+}
+
+.vm-actions-bar {
+    padding: 15px;
+    background-color: #f8f9fa;
+    display: flex;
+    gap: 10px;
+    border-top: 1px solid var(--border-color);
+}
+
+/* Acordeón para WordPress */
+.wp-accordion {
+    margin-top: 15px;
+    border: 1px solid var(--border-color);
+    border-radius: 5px;
+    overflow: hidden;
+}
+
+.wp-accordion-header {
+    padding: 12px 15px;
+    background-color: var(--light-color);
+    cursor: pointer;
+    border-bottom: 1px solid var(--border-color);
+    transition: background-color 0.2s;
+    display: flex;
+    align-items: center;
+}
+
+.wp-accordion-header:hover {
+    background-color: var(--hover-color);
+}
+
+.wp-accordion-header-icon {
+    margin-right: 8px;
+    transition: transform 0.2s;
+}
+
+.wp-accordion-header[aria-expanded="true"] .wp-accordion-header-icon {
+    transform: rotate(90deg);
+}
+
+.wp-accordion-content {
+    padding: 15px;
+    display: none;
+}
+
+.wp-accordion-content.active {
+    display: block;
+}
+
+/* Formulario de WordPress */
+.wp-form {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+    gap: 15px;
+}
+
+.form-group {
+    margin-bottom: 15px;
+}
+
+.form-group label {
+    display: block;
+    margin-bottom: 5px;
+    font-weight: 500;
+    font-size: 0.9rem;
+}
+
+.form-control {
+    width: 100%;
+    padding: 8px 12px;
+    font-size: 1rem;
+    line-height: 1.5;
+    color: #495057;
+    background-color: #fff;
+    border: 1px solid #ced4da;
+    border-radius: 0.25rem;
+    transition: border-color 0.15s ease-in-out, box-shadow 0.15s ease-in-out;
+}
+
+.form-control:focus {
+    border-color: var(--primary-color);
+    outline: 0;
+    box-shadow: 0 0 0 0.2rem rgba(74, 109, 167, 0.25);
+}
+
+.form-submit {
+    grid-column: 1 / -1;
+    text-align: right;
+}
+
+/* Estilos para WordPress ya instalado */
+.wp-status-badge {
+    display: inline-block;
+    padding: 5px 10px;
+    border-radius: 4px;
+    margin-bottom: 10px;
+    font-weight: 500;
+}
+
+/* Media queries para responsividad */
+@media (max-width: 992px) {
+    .vm-info-grid {
+        grid-template-columns: repeat(2, 1fr);
+    }
+}
+
+@media (max-width: 768px) {
+    .welcome-header {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 15px;
+    }
+    
+    .vm-card {
+        width: 100%;
+    }
+    
+    .wp-form {
+        grid-template-columns: 1fr;
+    }
+}
+
+/* Clase para mostrar/ocultar elementos */
+.hidden {
+    display: none;
+}

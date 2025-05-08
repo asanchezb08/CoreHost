@@ -1,0 +1,22 @@
+version: "3.9"
+
+services:
+  web:
+    image: webapp-as # Imatge del servei web que raplica en cada rèplica
+    ports:
+      - "80:80" # aquest port és el que exposa el servei al host
+    environment:
+      - DB_HOST=172.16.56.145 # Adreça IP de la base de dades
+      - DB_NAME=hosting_inventari # Nom de la base de dades
+      - DB_USER=myadmin # Usuari de la base de dades
+      - DB_PASS=proyecto # Contrasenya de la base de dades
+    networks:
+      - webnet # Xarxa a la qual està connectat el servei
+    deploy:
+      replicas: 6 # Nombre de rèpliques del servei
+      restart_policy:
+        condition: on-failure # Política de reinici en cas de fallada
+
+networks:
+  webnet:
+    driver: overlay # Tipus de xarxa utilitzada (overlay)
