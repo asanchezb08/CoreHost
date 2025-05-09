@@ -1,0 +1,7 @@
+Canviar versió php VM: https://youtu.be/ri54QwUnY0w
+IPS amb Wazuh: https://youtu.be/lCQTWVeDgTQ 
+Modificar recursos VM: https://youtu.be/e8Xd_GIpAKU 
+Crear VM verificacio de serveis i WordPress: https://youtu.be/8Om0ZhZcqBY
+Zabbix alertes: https://youtu.be/wk9Ytilxu9E
+Desplegament amb Docker Swarm: https://youtu.be/v-MbGNStKAU
+
