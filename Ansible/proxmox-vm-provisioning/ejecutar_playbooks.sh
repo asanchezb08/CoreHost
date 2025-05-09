@@ -7,7 +7,7 @@ export USER=ansible
 eval "$(ssh-agent -s)" >/dev/null 2>&1
 ssh-add /home/ansible/.ssh/id_rsa >/dev/null 2>&1
 
-# Cambiado a una ruta donde sí tienes permiso
+
 LOGFILE="/home/ansible/ansible_minuto.log"
 echo "--- $(date): Ejecutando playbooks ---" >> "$LOGFILE"
 
